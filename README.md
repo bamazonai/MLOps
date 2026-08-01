@@ -1,16 +1,18 @@
 # 🚕 Predicción del pago al conductor en viajes HVFHS de NYC
 
-Trabajo Práctico Final — **Operaciones de Aprendizaje de Máquina I (MLOps1)**
+Trabajo Práctico Final **Operaciones de Aprendizaje de Máquina I (MLOps1)**
 Especialización en Inteligencia Artificial (CEIA) — FIUBA
 
-**Autores:** Byron Garcia · María Gabriela Di Grazia
+**Alumnos:** 
+Byron Garcia 
+María Gabriela Di Grazia
 
 ---
 
 ## 🧭 Objetivo del proyecto
 
-Integrar un modelo de Machine Learning —desarrollado previamente en la materia de
-Aprendizaje de Máquina— dentro de una infraestructura productiva de MLOps.
+Integrar un modelo de Machine Learning desarrollado previamente en la materia de
+Aprendizaje de Máquina, dentro de una infraestructura productiva de MLOps.
 
 El modelo predice el **pago al conductor (`driver_pay`)** de viajes de transporte de
 alta demanda (*High Volume For-Hire Services*, HVFHS) de la ciudad de Nueva York, a
