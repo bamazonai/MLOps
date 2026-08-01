@@ -4,7 +4,7 @@ Trabajo Práctico Final **Operaciones de Aprendizaje de Máquina I (MLOps1)**
 Especialización en Inteligencia Artificial (CEIA) — FIUBA
 
 **Alumnos:** 
-Byron Garcia 
+Byron Garcia &
 María Gabriela Di Grazia
 
 ---
