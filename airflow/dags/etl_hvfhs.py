@@ -138,6 +138,6 @@ def process_etl_hvfhs_data():
 
         print(f"Train: {X_train.shape[0]:,} filas | Test: {X_test.shape[0]:,} filas")
 
-    get_data() >> clean_and_features()
+    get_data() >> clean_and_features() >> split_dataset()
 
 dag = process_etl_hvfhs_data()
