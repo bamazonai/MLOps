@@ -108,6 +108,36 @@ def process_etl_hvfhs_data():
         wr.s3.to_parquet(df=df, path="s3://data/processed/hvfhs_cleaned.parquet")
         print(f"Dataset limpio: {df.shape[0]:,} filas, {df.shape[1]} columnas")
 
+    @task.virtualenv(
+        task_id="split_dataset",
+        requirements=["awswrangler==3.6.0", "scikit-learn==1.3.2", "pandas==2.1.4", "pyarrow==15.0.0"],
+        system_site_packages=True,
+    )
+    def split_dataset():
+        """Separa el dataset limpio en train (80%) y test (20%)."""
+        import awswrangler as wr
+        from sklearn.model_selection import train_test_split
+
+        # Leer el dataset limpio que dejó clean_and_features
+        df = wr.s3.read_parquet(path="s3://data/processed/hvfhs_cleaned.parquet")
+
+        target = "driver_pay_log"
+        X = df.drop(columns=target)   # las 19 features
+        y = df[[target]]              # el target (lo dejamos como DataFrame)
+
+        # Regresión -> sin stratify
+        X_train, X_test, y_train, y_test = train_test_split(
+            X, y, test_size=0.2, random_state=42
+        )
+
+        # Guardar las 4 partes en S3
+        wr.s3.to_parquet(df=X_train, path="s3://data/final/train/hvfhs_X_train.parquet")
+        wr.s3.to_parquet(df=X_test,  path="s3://data/final/test/hvfhs_X_test.parquet")
+        wr.s3.to_parquet(df=y_train, path="s3://data/final/train/hvfhs_y_train.parquet")
+        wr.s3.to_parquet(df=y_test,  path="s3://data/final/test/hvfhs_y_test.parquet")
+
+        print(f"Train: {X_train.shape[0]:,} filas | Test: {X_test.shape[0]:,} filas")
+
     get_data() >> clean_and_features()
 
 dag = process_etl_hvfhs_data()
