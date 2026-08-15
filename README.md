@@ -1,18 +1,17 @@
 # 🚕 Predicción del pago al conductor en viajes HVFHS de NYC
 
-Trabajo Práctico Final **Operaciones de Aprendizaje de Máquina I (MLOps1)**
+Trabajo Práctico Final — **Operaciones de Aprendizaje de Máquina I (MLOps1)**
 Especialización en Inteligencia Artificial (CEIA) — FIUBA
 
-**Alumnos:** 
-Byron Garcia &
-María Gabriela Di Grazia
+**Grupo 8**
+**Autores:** Byron Garcia · María Gabriela Di Grazia
 
 ---
 
 ## 🧭 Objetivo del proyecto
 
-Integrar un modelo de Machine Learning desarrollado previamente en la materia de
-Aprendizaje de Máquina, dentro de una infraestructura productiva de MLOps.
+Integrar un modelo de Machine Learning —desarrollado previamente en la materia de
+Aprendizaje de Máquina— dentro de una infraestructura productiva de MLOps.
 
 El modelo predice el **pago al conductor (`driver_pay`)** de viajes de transporte de
 alta demanda (*High Volume For-Hire Services*, HVFHS) de la ciudad de Nueva York, a
@@ -45,32 +44,38 @@ La infraestructura se basa en el ambiente productivo provisto por la cátedra
 
 ---
 
-## 📊 Estado de avance (entrega parcial)
+## 📊 Estado de avance
 
-Completado a la fecha:
+### ✅ Completado
 
--**Infraestructura productiva desplegada y funcional.** Los 10 contenedores
-  levantan correctamente y en estado *healthy*. Se verificó el acceso a las cuatro
-  interfaces: Airflow, MLflow, MinIO y FastAPI.
--**Repositorio del grupo creado y versionado en GitHub.**
--**DAG de ETL implementado y en ejecución.** Dos de sus cuatro tareas ya corren
-  correctamente de punta a punta en Airflow, escribiendo sus resultados en MinIO:
-  1. `get_data`— descarga los datos de la NYC TLC, toma una muestra de 500k filas
+- **Infraestructura productiva desplegada y funcional.** Los 10 contenedores levantan
+  correctamente y en estado *healthy*. Verificado el acceso a Airflow, MLflow, MinIO y
+  FastAPI.
+- **Repositorio del grupo creado y versionado en GitHub.**
+- **DAG de ETL completo y en ejecución.** Las cuatro tareas corren de punta a punta en
+  Airflow, escribiendo sus resultados en MinIO:
+  1. `get_data` — descarga los datos de la NYC TLC, toma una muestra de 500k filas
      (lectura por bloques para no saturar memoria) y la guarda en `s3://data/raw/`.
-  2. `clean_and_features`— limpieza, transformación logarítmica y feature
-     engineering; guarda el dataset procesado en `s3://data/processed/`.
-  3. `split_dataset` — partición train/test (pendiente).
-  4. `normalize_data` — estandarización y persistencia del scaler (pendiente).
+  2. `clean_and_features` — limpieza, transformación logarítmica y feature engineering;
+     guarda el dataset procesado en `s3://data/processed/`.
+  3. `split_dataset` — partición train/test (80/20) en `s3://data/final/`.
+  4. `normalize_data` — estandarización con `StandardScaler` (ajustado solo con train),
+     persistencia de los parámetros del scaler en `s3://data/data_info/data.json` y
+     primer registro en MLflow (experimento *HVFHS Driver Pay*).
+- **Primer contacto con MLflow** establecido desde el pipeline de ETL.
 
-## 🚧 Trabajo pendiente y plan de continuación
+### 🚧 Pendiente / plan de continuación
 
-1. **Completar las dos tareas restantes del ETL** (`split_dataset` y `normalize_data`).
-2. **Implementar el experimento de MLflow con búsqueda de hiperparámetros** para
-   XGBoost, registrando corridas, métricas y el mejor modelo en el Model Registry.
+1. **Experimento de MLflow con búsqueda de hiperparámetros** para XGBoost, logueando
+   parámetros, métricas (R², RMSE, MAE) y registrando el mejor modelo en el Model
+   Registry.
+2. **DAG de entrenamiento** que consuma el parquet procesado y registre el modelo en
+   MLflow.
 3. **Servir el modelo mediante FastAPI**, con un endpoint de predicción que aplique el
-   mismo preprocesamiento que en el entrenamiento.
-4. **Completar la documentación** (README final, docstrings y documentación automática
-   de la API).
+   mismo preprocesamiento que en el entrenamiento (incluye deshacer la transformación
+   logarítmica con `np.exp`).
+4. **Modularizar** la lógica de las tareas del DAG.
+5. **Documentación final** (README, docstrings y documentación automática de la API).
 
 ---
 
@@ -101,3 +106,17 @@ Interfaces disponibles una vez levantado el entorno:
 | MLflow   | http://localhost:5001      |
 | MinIO    | http://localhost:9001      |
 | FastAPI  | http://localhost:8800/docs |
+
+---
+
+## 📁 Estructura del pipeline de datos (MinIO / S3)
+
+```
+s3://data/
+├── raw/hvfhs_raw.parquet              # muestra cruda descargada de NYC TLC
+├── processed/hvfhs_cleaned.parquet    # dataset limpio + features
+├── final/
+│   ├── train/  (X_train, y_train)     # partición de entrenamiento (escalada)
+│   └── test/   (X_test, y_test)       # partición de prueba (escalada)
+└── data_info/data.json               # parámetros del StandardScaler
+```
