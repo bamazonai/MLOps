@@ -137,7 +137,60 @@ def process_etl_hvfhs_data():
         wr.s3.to_parquet(df=y_test,  path="s3://data/final/test/hvfhs_y_test.parquet")
 
         print(f"Train: {X_train.shape[0]:,} filas | Test: {X_test.shape[0]:,} filas")
+    @task.virtualenv(
+        task_id="normalize_data",
+        requirements=["awswrangler==3.6.0", "scikit-learn==1.3.2",
+                      "mlflow==2.10.2", "pandas==2.1.4", "pyarrow==15.0.0"],
+        system_site_packages=True,
+    )
+    def normalize_data():
+        """Estandariza las features y guarda los parámetros del scaler."""
+        import json
+        import boto3
+        import mlflow
+        import pandas as pd
+        import awswrangler as wr
+        from sklearn.preprocessing import StandardScaler
 
-    get_data() >> clean_and_features() >> split_dataset()
+        # Leer train y test que dejó split_dataset
+        X_train = wr.s3.read_parquet(path="s3://data/final/train/hvfhs_X_train.parquet")
+        X_test = wr.s3.read_parquet(path="s3://data/final/test/hvfhs_X_test.parquet")
+
+        # Ajustar el scaler SOLO con train, transformar ambos
+        scaler = StandardScaler()
+        X_train_scaled = scaler.fit_transform(X_train)
+        X_test_scaled = scaler.transform(X_test)
+
+        # Volver a DataFrame (fit_transform devuelve un array sin nombres de columna)
+        X_train = pd.DataFrame(X_train_scaled, columns=X_train.columns)
+        X_test = pd.DataFrame(X_test_scaled, columns=X_test.columns)
+
+        # Sobrescribir en S3 las versiones ya escaladas
+        wr.s3.to_parquet(df=X_train, path="s3://data/final/train/hvfhs_X_train.parquet")
+        wr.s3.to_parquet(df=X_test,  path="s3://data/final/test/hvfhs_X_test.parquet")
+
+        # Guardar los parámetros del scaler (media y desvío) en un JSON en S3
+        data_dict = {
+            "columns": X_train.columns.to_list(),
+            "standard_scaler_mean": scaler.mean_.tolist(),
+            "standard_scaler_std": scaler.scale_.tolist(),
+        }
+        client = boto3.client("s3")
+        client.put_object(
+            Bucket="data",
+            Key="data_info/data.json",
+            Body=json.dumps(data_dict, indent=2),
+        )
+
+        # Primer registro en MLflow
+        mlflow.set_tracking_uri("http://mlflow:5000")
+        experiment = mlflow.set_experiment("HVFHS Driver Pay")
+        with mlflow.start_run(run_name="etl_normalize", experiment_id=experiment.experiment_id):
+            mlflow.log_param("Train observations", X_train.shape[0])
+            mlflow.log_param("Test observations", X_test.shape[0])
+
+        print("Scaler guardado en data_info/data.json y registrado en MLflow")
+
+    get_data() >> clean_and_features() >> split_dataset() >> normalize_data()
 
 dag = process_etl_hvfhs_data()
