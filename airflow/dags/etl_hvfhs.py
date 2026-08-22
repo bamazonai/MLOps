@@ -1,111 +1,72 @@
 import datetime
+
 from airflow.decorators import dag, task
 
+markdown_text = """
+### ETL HVFHS
+
+Descarga una muestra de viajes HVFHS (NYC TLC, diciembre 2024), limpia, arma features,
+parte train/test y estandariza. Escribe los parquet en MinIO (`s3://data/`) y registra
+el run `etl_normalize` en el experimento **HVFHS Driver Pay**.
+
+La lógica vive en el paquete `hvfhs/` (este archivo solo orquesta).
+"""
+
+default_args = {
+    "owner": "Grupo 8",
+    "depends_on_past": False,
+    "retries": 1,
+    "retry_delay": datetime.timedelta(minutes=5),
+    "dagrun_timeout": datetime.timedelta(minutes=60),
+}
+
+
 @dag(
-    dag_id = "process_etl_hvfhs_data",
+    dag_id="process_etl_hvfhs_data",
+    description="ETL de viajes HVFHS: descarga, features, split y scaler.",
+    doc_md=markdown_text,
     schedule=None,
-    start_date = datetime.datetime(2024, 1, 1),
+    start_date=datetime.datetime(2024, 1, 1),
     catchup=False,
-    tags = ["ETL", "HVFHS"],
+    tags=["ETL", "HVFHS"],
+    default_args=default_args,
 )
 def process_etl_hvfhs_data():
     @task.virtualenv(
-        task_id = "get_data",
+        task_id="get_data",
         requirements=["awswrangler==3.6.0", "pyarrow==15.0.0", "pandas==2.1.4"],
         system_site_packages=True,
     )
     def get_data():
-        """ Descarga el dataset de HVFHS, selecciona columnas y guarda en S3"""
-        import urllib.request
-        import pyarrow.parquet as pq
-        import pyarrow as pa
-        import pandas as pd
+        """Descarga el dataset de HVFHS, toma una muestra y guarda en S3."""
+        import sys
+
+        sys.path.insert(0, "/opt/airflow/dags")
         import awswrangler as wr
+        from hvfhs.constants import RAW_PATH
+        from hvfhs.ingest import download_sample
 
-        url = "https://d37ci6vzurychx.cloudfront.net/trip-data/fhvhv_tripdata_2024-12.parquet"
-
-        columnas = [
-            "hvfhs_license_num", "pickup_datetime",
-            "trip_miles", "trip_time", "base_passenger_fare",
-            "tolls", "bcf", "sales_tax", "congestion_surcharge", "airport_fee", "tips",
-            "driver_pay",
-            "shared_request_flag", "shared_match_flag", "access_a_ride_flag",
-            "wav_request_flag", "wav_match_flag",
-        ]
-
-        #Descargamos pero para que no se muera, usemos disco y no memoria
-        local_path = "/tmp/fhvhv.parquet"
-        urllib.request.urlretrieve(url, local_path)
-
-        #Leeremos solo los primeros 500,000 registros para no saturar la memoria
-        pf = pq.ParquetFile(local_path)
-        frames, total = [], 0
-
-        for rg in range(pf.num_row_groups):
-            frames.append(pf.read_row_group(rg, columns=columnas))
-            total += frames[-1].num_rows
-            if total >= 500_000:
-                break
-
-        df = pa.concat_tables(frames).to_pandas()
-
-        #Muestra 500K
-        df = df.sample(n=min(500_000, df.shape[0]), random_state=42).reset_index(drop=True)
-        wr.s3.to_parquet(df=df, path="s3://data/raw/hvfhs_raw.parquet")
-
+        df = download_sample()
+        wr.s3.to_parquet(df=df, path=RAW_PATH)
         print(f"Muestramos lo guardado: {df.shape[0]:,} filas")
 
-    @task.virtualenv(task_id = "clean_and_features", requirements=["awswrangler==3.6.0", "pyarrow==15.0.0", "pandas==2.1.4", "numpy==1.26.4"], system_site_packages=True)
+    @task.virtualenv(
+        task_id="clean_and_features",
+        requirements=["awswrangler==3.6.0", "pyarrow==15.0.0", "pandas==2.1.4", "numpy==1.26.4"],
+        system_site_packages=True,
+    )
     def clean_and_features():
-        """Limpieza y feature engineering del dataset de HVFHS"""
-        import numpy as np
-        import pandas as pd
+        """Limpieza y feature engineering del dataset de HVFHS."""
+        import sys
+
+        sys.path.insert(0, "/opt/airflow/dags")
         import awswrangler as wr
+        from hvfhs.constants import PROCESSED_PATH, RAW_PATH
+        from hvfhs.features import build_features
 
-        #Ahora si, ya cargados los datos, limpiamos y hacemos feature engineering
-        df = wr.s3.read_parquet(path="s3://data/raw/hvfhs_raw.parquet")
-
-        #Limpieza, solo viajes con valores positivos
-        for col in ["trip_miles", "trip_time", "base_passenger_fare", "driver_pay"]:
-            df = df[df[col] > 0]
-
-        # Fees que hayan sido nulos
-        for col in ["tolls", "bcf", "sales_tax", "congestion_surcharge", "airport_fee", "tips"]:
-            df[col] = df[col].fillna(0)
-
-        #Aplicamos la trasformacion logaritmica a las variables continuas
-        df["trip_miles_log"] = np.log(df["trip_miles"])
-        df["trip_time_log"] = np.log(df["trip_time"])
-        df["base_passenger_fare_log"] = np.log(df["base_passenger_fare"])
-        df["driver_pay_log"] = np.log(df["driver_pay"])
-
-        #Features de tiempo
-        df["pickup_datetime"] = pd.to_datetime(df["pickup_datetime"])
-        df["hora"] = df["pickup_datetime"].dt.hour
-        df["dia_semana"] = df["pickup_datetime"].dt.dayofweek
-        df["es_fin_de_semana"] = df["dia_semana"].isin([5, 6]).astype(int)
-        df["franja_horaria"] = pd.cut(df["hora"], bins=[0, 6, 12, 18, 24], labels=[0, 1, 2, 3], right=False).astype(int)
-
-
-        #Ahora nos fijamos en el encoding
-        df["es_uber"] = (df["hvfhs_license_num"] == "HV0003").astype(int)
-        flags = ["shared_request_flag", "shared_match_flag", "access_a_ride_flag", "wav_request_flag", "wav_match_flag"]
-        for flag in flags:
-            df[flag] = (df[flag] == "Y").astype(int)
-
-        #Quedammos con los features y target
-        features = ["trip_miles_log", "trip_time_log", "base_passenger_fare_log",
-                    "tolls", "bcf", "sales_tax", "congestion_surcharge", "airport_fee", "tips",
-                    "hora", "dia_semana", "es_fin_de_semana", "franja_horaria",
-                    "es_uber", "shared_request_flag", "shared_match_flag",
-                    "access_a_ride_flag", "wav_request_flag", "wav_match_flag"]
-        
-        target = "driver_pay_log"
-
-        df = df[features + [target]].dropna().reset_index(drop=True)
-    
-        #Guardamos el dataset limpio y con features
-        wr.s3.to_parquet(df=df, path="s3://data/processed/hvfhs_cleaned.parquet")
+        df = wr.s3.read_parquet(path=RAW_PATH)
+        df = build_features(df)
+        wr.s3.to_parquet(df=df, path=PROCESSED_PATH)
         print(f"Dataset limpio: {df.shape[0]:,} filas, {df.shape[1]} columnas")
 
     @task.virtualenv(
@@ -115,76 +76,65 @@ def process_etl_hvfhs_data():
     )
     def split_dataset():
         """Separa el dataset limpio en train (80%) y test (20%)."""
+        import sys
+
+        sys.path.insert(0, "/opt/airflow/dags")
         import awswrangler as wr
-        from sklearn.model_selection import train_test_split
-
-        # Leer el dataset limpio que dejó clean_and_features
-        df = wr.s3.read_parquet(path="s3://data/processed/hvfhs_cleaned.parquet")
-
-        target = "driver_pay_log"
-        X = df.drop(columns=target)   # las 19 features
-        y = df[[target]]              # el target (lo dejamos como DataFrame)
-
-        # Regresión -> sin stratify
-        X_train, X_test, y_train, y_test = train_test_split(
-            X, y, test_size=0.2, random_state=42
+        from hvfhs.constants import (
+            PROCESSED_PATH,
+            X_TEST_PATH,
+            X_TRAIN_PATH,
+            Y_TEST_PATH,
+            Y_TRAIN_PATH,
         )
+        from hvfhs.split_scale import split_xy
 
-        # Guardar las 4 partes en S3
-        wr.s3.to_parquet(df=X_train, path="s3://data/final/train/hvfhs_X_train.parquet")
-        wr.s3.to_parquet(df=X_test,  path="s3://data/final/test/hvfhs_X_test.parquet")
-        wr.s3.to_parquet(df=y_train, path="s3://data/final/train/hvfhs_y_train.parquet")
-        wr.s3.to_parquet(df=y_test,  path="s3://data/final/test/hvfhs_y_test.parquet")
-
+        df = wr.s3.read_parquet(path=PROCESSED_PATH)
+        X_train, X_test, y_train, y_test = split_xy(df)
+        wr.s3.to_parquet(df=X_train, path=X_TRAIN_PATH)
+        wr.s3.to_parquet(df=X_test, path=X_TEST_PATH)
+        wr.s3.to_parquet(df=y_train, path=Y_TRAIN_PATH)
+        wr.s3.to_parquet(df=y_test, path=Y_TEST_PATH)
         print(f"Train: {X_train.shape[0]:,} filas | Test: {X_test.shape[0]:,} filas")
+
     @task.virtualenv(
         task_id="normalize_data",
-        requirements=["awswrangler==3.6.0", "scikit-learn==1.3.2",
-                      "mlflow==2.10.2", "pandas==2.1.4", "pyarrow==15.0.0"],
+        requirements=["awswrangler==3.6.0", "scikit-learn==1.3.2", "mlflow==2.10.2", "pandas==2.1.4", "pyarrow==15.0.0"],
         system_site_packages=True,
     )
     def normalize_data():
         """Estandariza las features y guarda los parámetros del scaler."""
         import json
+        import sys
+
+        sys.path.insert(0, "/opt/airflow/dags")
         import boto3
         import mlflow
-        import pandas as pd
         import awswrangler as wr
-        from sklearn.preprocessing import StandardScaler
+        from hvfhs.constants import (
+            DATA_INFO_BUCKET,
+            DATA_INFO_KEY,
+            EXPERIMENT_NAME,
+            MLFLOW_TRACKING_URI,
+            X_TEST_PATH,
+            X_TRAIN_PATH,
+        )
+        from hvfhs.split_scale import fit_transform_scaler
 
-        # Leer train y test que dejó split_dataset
-        X_train = wr.s3.read_parquet(path="s3://data/final/train/hvfhs_X_train.parquet")
-        X_test = wr.s3.read_parquet(path="s3://data/final/test/hvfhs_X_test.parquet")
+        X_train = wr.s3.read_parquet(path=X_TRAIN_PATH)
+        X_test = wr.s3.read_parquet(path=X_TEST_PATH)
+        X_train, X_test, data_dict = fit_transform_scaler(X_train, X_test)
+        wr.s3.to_parquet(df=X_train, path=X_TRAIN_PATH)
+        wr.s3.to_parquet(df=X_test, path=X_TEST_PATH)
 
-        # Ajustar el scaler SOLO con train, transformar ambos
-        scaler = StandardScaler()
-        X_train_scaled = scaler.fit_transform(X_train)
-        X_test_scaled = scaler.transform(X_test)
-
-        # Volver a DataFrame (fit_transform devuelve un array sin nombres de columna)
-        X_train = pd.DataFrame(X_train_scaled, columns=X_train.columns)
-        X_test = pd.DataFrame(X_test_scaled, columns=X_test.columns)
-
-        # Sobrescribir en S3 las versiones ya escaladas
-        wr.s3.to_parquet(df=X_train, path="s3://data/final/train/hvfhs_X_train.parquet")
-        wr.s3.to_parquet(df=X_test,  path="s3://data/final/test/hvfhs_X_test.parquet")
-
-        # Guardar los parámetros del scaler (media y desvío) en un JSON en S3
-        data_dict = {
-            "columns": X_train.columns.to_list(),
-            "standard_scaler_mean": scaler.mean_.tolist(),
-            "standard_scaler_std": scaler.scale_.tolist(),
-        }
-        client = boto3.client("s3")
-        client.put_object(
-            Bucket="data",
-            Key="data_info/data.json",
+        boto3.client("s3").put_object(
+            Bucket=DATA_INFO_BUCKET,
+            Key=DATA_INFO_KEY,
             Body=json.dumps(data_dict, indent=2),
         )
 
-        # Primer registro en MLflow
-        mlflow.set_tracking_uri("http://mlflow:5000")
-        experiment = mlflow.set_experiment("HVFHS Driver Pay")
+        mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
+        experiment = mlflow.set_experiment(EXPERIMENT_NAME)
         with mlflow.start_run(run_name="etl_normalize", experiment_id=experiment.experiment_id):
             mlflow.log_param("Train observations", X_train.shape[0])
             mlflow.log_param("Test observations", X_test.shape[0])
@@ -192,5 +142,6 @@ def process_etl_hvfhs_data():
         print("Scaler guardado en data_info/data.json y registrado en MLflow")
 
     get_data() >> clean_and_features() >> split_dataset() >> normalize_data()
+
 
 dag = process_etl_hvfhs_data()
